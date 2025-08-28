@@ -59,7 +59,7 @@ class QuickbaseClient:
             'Content-Type': 'application/json'
         }
     
-    def upsert_record(self, data: Dict[int, Any]) -> bool:
+def upsert_record(self, data: Dict[int, Any]) -> bool:
     if not self.table_id:
         logger.error("Table ID not set")
         return False
@@ -91,7 +91,7 @@ class QuickbaseClient:
             logger.error(f"Response status: {e.response.status_code}")
             logger.error(f"Response body: {e.response.text}")
         return False
-
+        
 def transform_data(design_data: Dict) -> Dict[int, Any]:
     qb_record = {}
     design = design_data.get('design', {})
