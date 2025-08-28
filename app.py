@@ -59,39 +59,56 @@ class QuickbaseClient:
             'Content-Type': 'application/json'
         }
     
-def upsert_record(self, data: Dict[int, Any]) -> bool:
-    if not self.table_id:
-        logger.error("Table ID not set")
-        return False
-    
-    url = f"https://api.quickbase.com/v1/records"
-    body = {
-        'to': self.table_id,
-        'data': [data],
-        'mergeFieldId': 6,
-        'fieldsToReturn': [3, 6]  # Return record ID and design ID
-    }
-    
-    try:
-        logger.info(f"Sending to Quickbase: {json.dumps(body)[:500]}")  # Log what we're sending
-        response = requests.post(url, json=body, headers=self.headers)
-        response.raise_for_status()
-        result = response.json()
-        logger.info(f"Quickbase response: {json.dumps(result)}")  # Log full response
+    def upsert_record(self, data: Dict[int, Any]) -> bool:
+        if not self.table_id:
+            logger.error("Table ID not set")
+            return False
         
-        # Check if record was actually created/updated
-        if 'data' in result and len(result['data']) > 0:
-            record_id = result['data'][0].get('3', {}).get('value', 'unknown')
-            logger.info(f"Record ID in Quickbase: {record_id}")
+        url = f"https://api.quickbase.com/v1/records"
         
-        return True
-    except Exception as e:
-        logger.error(f"Error upserting record: {str(e)}")
-        if hasattr(e, 'response') and e.response:
-            logger.error(f"Response status: {e.response.status_code}")
-            logger.error(f"Response body: {e.response.text}")
-        return False
+        # Log the first few fields being sent
+        logger.info(f"Attempting to upsert to table {self.table_id}")
+        sample_data = {k: v for k, v in list(data.items())[:5]}
+        logger.info(f"Sample fields being sent: {sample_data}")
         
+        body = {
+            'to': self.table_id,
+            'data': [data],
+            'mergeFieldId': 6,
+            'fieldsToReturn': [3, 6]
+        }
+        
+        try:
+            response = requests.post(url, json=body, headers=self.headers)
+            logger.info(f"Response status code: {response.status_code}")
+            
+            # Log response even before checking status
+            response_text = response.text[:500] if response.text else "Empty response"
+            logger.info(f"Response text: {response_text}")
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            # Check if we actually got data back
+            if 'data' not in result or len(result['data']) == 0:
+                logger.error("No data returned from Quickbase - record may not have been created")
+                return False
+                
+            # Log what was created/updated
+            record_data = result['data'][0]
+            record_id = record_data.get('3', {}).get('value', 'NO_RECORD_ID')
+            design_id = record_data.get('6', {}).get('value', 'NO_DESIGN_ID')
+            logger.info(f"Quickbase record ID: {record_id}, Design ID: {design_id}")
+            
+            return True
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP Error: {e}")
+            logger.error(f"Response: {e.response.text if e.response else 'No response'}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            return False
+
 def transform_data(design_data: Dict) -> Dict[int, Any]:
     qb_record = {}
     design = design_data.get('design', {})
