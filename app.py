@@ -24,7 +24,7 @@ QUICKBASE_CONFIG = {
     'realm': 'kin.quickbase.com',
     'user_token': os.environ.get('QUICKBASE_TOKEN', 'b6um6p_p3bs_0_bmrupwzbc82cdnb44a7pirtbxif'),
     'app_id': 'bvdg9ck3u',
-    'table_id': os.environ.get('QUICKBASE_TABLE_ID', '')
+    'table_id': os.environ.get('QUICKBASE_TABLE_ID', 'bvdzbdbe2')
 }
 
 class AuroraSolarClient:
@@ -45,17 +45,6 @@ class AuroraSolarClient:
             return response.json()
         except Exception as e:
             logger.error(f"Error fetching design {design_id}: {str(e)}")
-            return None
-    
-    def get_project_designs(self, project_id: str) -> Optional[List[str]]:
-        url = f"{self.base_url}/tenants/{self.tenant_id}/projects/{project_id}/designs"
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            designs = response.json().get('designs', [])
-            return [d.get('design_id') for d in designs if d.get('design_id')]
-        except Exception as e:
-            logger.error(f"Error fetching designs for project {project_id}: {str(e)}")
             return None
 
 class QuickbaseClient:
@@ -86,10 +75,12 @@ class QuickbaseClient:
         try:
             response = requests.post(url, json=body, headers=self.headers)
             response.raise_for_status()
-            logger.info(f"Successfully upserted record")
+            logger.info(f"Successfully upserted record to Quickbase")
             return True
         except Exception as e:
             logger.error(f"Error upserting record: {str(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response: {e.response.text}")
             return False
 
 def transform_data(design_data: Dict) -> Dict[int, Any]:
@@ -212,90 +203,98 @@ def transform_data(design_data: Dict) -> Dict[int, Any]:
     
     return qb_record
 
-def process_webhook(data: Dict):
-    try:
-        project_id = data.get('project_id')
-        logger.info(f"Processing webhook for project {project_id}")
-        
-        aurora_client = AuroraSolarClient()
-        qb_client = QuickbaseClient()
-        
-        design_ids = aurora_client.get_project_designs(project_id)
-        if not design_ids:
-            logger.warning(f"No designs found for project {project_id}")
-            return
-        
-        logger.info(f"Found {len(design_ids)} designs to sync")
-        
-        for design_id in design_ids:
-            try:
-                design_data = aurora_client.get_design_summary(design_id)
-                if design_data:
-                    qb_record = transform_data(design_data)
-                    qb_client.upsert_record(qb_record)
-                    logger.info(f"Synced design {design_id}")
-                time.sleep(0.7)
-            except Exception as e:
-                logger.error(f"Error processing design {design_id}: {e}")
-                
-    except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'service': 'Aurora Solar Webhook Server',
+        'status': 'running',
+        'endpoints': {
+            'webhook': '/webhook',
+            'health': '/health',
+            'test': '/test'
+        }
+    })
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'healthy'})
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    if request.method == 'GET':
-        data = request.args.to_dict()
-    else:
-        data = request.get_json() or {}
+    # Aurora sends webhook as URL parameters
+    project_id = request.args.get('project_id')
+    design_id = request.args.get('design_id')
+    stage = request.args.get('stage')
+    source = request.args.get('source')
     
-    logger.info(f"Received webhook: {json.dumps(data)}")
+    logger.info(f"Webhook received - Project: {project_id}, Design: {design_id}, Stage: {stage}, Source: {source}")
     
-    # Aurora sends these with spaces in the names
-    project_id = data.get('Querystring Project Id')
-    design_id = data.get('Querystring Design Id')
-    stage = data.get('Querystring Stage')
-    
-    logger.info(f"Project ID: {project_id}, Design ID: {design_id}, Stage: {stage}")
-    
-    # Only process if stage is "installed"
+    # Check if stage is "installed"
     if stage and stage.lower() == 'installed' and design_id:
-        # Create a simplified data dict for processing
+        logger.info(f"Processing installed design {design_id}")
+        
         process_data = {
-            'project_id': project_id,
             'design_id': design_id,
-            'stage': stage
+            'project_id': project_id,
+            'stage': stage,
+            'source': source
         }
         
-        # Process this specific design directly
         thread = threading.Thread(target=process_single_design, args=(process_data,))
         thread.daemon = True
         thread.start()
         
         return jsonify({'status': 'accepted'}), 200
     else:
-        logger.info(f"Skipping - stage is {stage}")
-        return jsonify({'status': 'skipped', 'reason': 'Not installed stage'}), 200
+        logger.info(f"Skipping - Stage is {stage}, not 'installed'")
+        return jsonify({'status': 'skipped', 'stage': stage}), 200
 
 def process_single_design(data: Dict):
     """Process a single design that was marked as installed"""
     try:
         design_id = data.get('design_id')
-        logger.info(f"Processing installed design {design_id}")
+        logger.info(f"Starting to process design {design_id}")
         
         aurora_client = AuroraSolarClient()
         qb_client = QuickbaseClient()
         
-        # Get the design summary directly
+        logger.info(f"Fetching design summary for {design_id}")
         design_data = aurora_client.get_design_summary(design_id)
+        
         if design_data:
+            logger.info(f"Got design data, transforming for Quickbase")
             qb_record = transform_data(design_data)
-            qb_client.upsert_record(qb_record)
-            logger.info(f"Successfully synced design {design_id} to Quickbase")
+            
+            logger.info(f"Sending to Quickbase table {QUICKBASE_CONFIG['table_id']}")
+            success = qb_client.upsert_record(qb_record)
+            
+            if success:
+                logger.info(f"✓ Successfully synced design {design_id} to Quickbase")
+            else:
+                logger.error(f"Failed to sync to Quickbase")
         else:
             logger.error(f"Could not fetch design data for {design_id}")
             
     except Exception as e:
-        logger.error(f"Error processing design: {e}")
+        logger.error(f"Error processing design: {str(e)}")
+
+@app.route('/test', methods=['GET'])
+def test():
+    """Test endpoint to manually trigger a sync"""
+    design_id = request.args.get('design_id')
+    if design_id:
+        process_data = {
+            'design_id': design_id,
+            'project_id': 'test',
+            'stage': 'installed',
+            'source': 'test'
+        }
+        thread = threading.Thread(target=process_single_design, args=(process_data,))
+        thread.daemon = True
+        thread.start()
+        return jsonify({'status': 'test started', 'design_id': design_id}), 200
+    else:
+        return jsonify({'error': 'Please provide design_id parameter'}), 400
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
