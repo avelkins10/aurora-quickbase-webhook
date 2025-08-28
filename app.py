@@ -241,21 +241,6 @@ def process_webhook(data: Dict):
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        'service': 'Aurora Solar Webhook Server',
-        'status': 'running',
-        'endpoints': {
-            'webhook': '/webhook',
-            'health': '/health'
-        }
-    })
-
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'healthy'})
-
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
@@ -265,11 +250,52 @@ def webhook():
     
     logger.info(f"Received webhook: {json.dumps(data)}")
     
-    thread = threading.Thread(target=process_webhook, args=(data,))
-    thread.daemon = True
-    thread.start()
+    # Aurora sends these with spaces in the names
+    project_id = data.get('Querystring Project Id')
+    design_id = data.get('Querystring Design Id')
+    stage = data.get('Querystring Stage')
     
-    return jsonify({'status': 'accepted'}), 200
+    logger.info(f"Project ID: {project_id}, Design ID: {design_id}, Stage: {stage}")
+    
+    # Only process if stage is "installed"
+    if stage and stage.lower() == 'installed' and design_id:
+        # Create a simplified data dict for processing
+        process_data = {
+            'project_id': project_id,
+            'design_id': design_id,
+            'stage': stage
+        }
+        
+        # Process this specific design directly
+        thread = threading.Thread(target=process_single_design, args=(process_data,))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({'status': 'accepted'}), 200
+    else:
+        logger.info(f"Skipping - stage is {stage}")
+        return jsonify({'status': 'skipped', 'reason': 'Not installed stage'}), 200
+
+def process_single_design(data: Dict):
+    """Process a single design that was marked as installed"""
+    try:
+        design_id = data.get('design_id')
+        logger.info(f"Processing installed design {design_id}")
+        
+        aurora_client = AuroraSolarClient()
+        qb_client = QuickbaseClient()
+        
+        # Get the design summary directly
+        design_data = aurora_client.get_design_summary(design_id)
+        if design_data:
+            qb_record = transform_data(design_data)
+            qb_client.upsert_record(qb_record)
+            logger.info(f"Successfully synced design {design_id} to Quickbase")
+        else:
+            logger.error(f"Could not fetch design data for {design_id}")
+            
+    except Exception as e:
+        logger.error(f"Error processing design: {e}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
