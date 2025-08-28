@@ -119,7 +119,8 @@ def transform_data(design_data: Dict) -> Dict[int, Any]:
     qb_record[22] = {'value': design.get('system_size_ac', 0) / 1000}
     qb_record[16] = {'value': 'Installed'}
     qb_record[18] = {'value': 'Installed'}
-    qb_record[9] = {'value': int(datetime.now(timezone.utc).timestamp() * 1000)}
+    # Field 9 (Received At) - Let Quickbase auto-populate this
+# qb_record[9] = {'value': int(datetime.now(timezone.utc).timestamp() * 1000)}
     
     energy = design.get('energy_production', {})
     if energy:
