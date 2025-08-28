@@ -60,28 +60,37 @@ class QuickbaseClient:
         }
     
     def upsert_record(self, data: Dict[int, Any]) -> bool:
-        if not self.table_id:
-            logger.error("Table ID not set")
-            return False
+    if not self.table_id:
+        logger.error("Table ID not set")
+        return False
+    
+    url = f"https://api.quickbase.com/v1/records"
+    body = {
+        'to': self.table_id,
+        'data': [data],
+        'mergeFieldId': 6,
+        'fieldsToReturn': [3, 6]  # Return record ID and design ID
+    }
+    
+    try:
+        logger.info(f"Sending to Quickbase: {json.dumps(body)[:500]}")  # Log what we're sending
+        response = requests.post(url, json=body, headers=self.headers)
+        response.raise_for_status()
+        result = response.json()
+        logger.info(f"Quickbase response: {json.dumps(result)}")  # Log full response
         
-        url = f"https://api.quickbase.com/v1/records"
-        body = {
-            'to': self.table_id,
-            'data': [data],
-            'mergeFieldId': 6,
-            'fieldsToReturn': [6]
-        }
+        # Check if record was actually created/updated
+        if 'data' in result and len(result['data']) > 0:
+            record_id = result['data'][0].get('3', {}).get('value', 'unknown')
+            logger.info(f"Record ID in Quickbase: {record_id}")
         
-        try:
-            response = requests.post(url, json=body, headers=self.headers)
-            response.raise_for_status()
-            logger.info(f"Successfully upserted record to Quickbase")
-            return True
-        except Exception as e:
-            logger.error(f"Error upserting record: {str(e)}")
-            if hasattr(e, 'response'):
-                logger.error(f"Response: {e.response.text}")
-            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error upserting record: {str(e)}")
+        if hasattr(e, 'response') and e.response:
+            logger.error(f"Response status: {e.response.status_code}")
+            logger.error(f"Response body: {e.response.text}")
+        return False
 
 def transform_data(design_data: Dict) -> Dict[int, Any]:
     qb_record = {}
